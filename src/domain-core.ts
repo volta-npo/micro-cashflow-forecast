@@ -52,28 +52,75 @@ export function calculateDomain(domain, state) {
   return { primary, secondary, completeness, rowScore, approved, insight, releaseReady: completeness >= 80 && rowScore >= 75 };
 }
 
+export function buildAdvancedDomainModel(domain, state) {
+  const calc = calculateDomain(domain, state);
+  const values = state.values || {};
+  const rows = state.rows || [];
+  const approvedRows = rows.filter((row) => row.approved).length;
+  const getNumber = (id, fallback = 0) => Number(values[id] || fallback);
+  const getText = (id, fallback = '') => String(values[id] || fallback);
+  const baseRecords = rows.map((row, index) => ({ id: row.id || `record-${index + 1}`, label: row.label, status: row.approved ? 'approved' : row.value ? 'draft' : 'missing', score: Number(row.score || 0), owner: getText('owner-reviewer', 'Volta reviewer'), evidence: row.value || 'Evidence required before client handoff' }));
+  if (domain.kind === 'cashflow') {
+    const startingCash = getNumber('dollar-value-cost', 1000);
+    const weeklyInflow = getNumber('monthly-volume') / 4;
+    const weeklyCost = getNumber('minutes-per-item') * 10;
+    const forecast = Array.from({ length: 13 }, (_, index) => { const week = index + 1; const base = Math.round(startingCash + (weeklyInflow - weeklyCost) * week); return { week, conservative: Math.round(base * 0.85), base, optimistic: Math.round(base * 1.12), risk: base < startingCash * 0.25 ? 'cash-floor' : 'normal' }; });
+    return { model: 'Scenario cashflow operating system', primaryOutput: '13-week cash runway forecast with scenario spread', dashboards: ['Runway weeks', 'Cash floor alerts', 'Scenario comparison'], workflows: ['Assumption intake', 'Recurring schedule', 'Scenario review', 'Owner summary'], records: forecast, automationRules: ['Escalate weeks below safety floor', 'Require labeled assumptions for every recurring item'], enterpriseReadiness: forecast.every((week) => week.base >= 0) && calc.releaseReady };
+  }
+  return { model: 'SaaS-grade operating workspace', primaryOutput: 'client-ready evidence system', dashboards: ['Readiness', 'Evidence', 'Approvals'], workflows: ['Intake', 'Review', 'Export'], records: baseRecords, automationRules: ['Require evidence before handoff'], enterpriseReadiness: calc.releaseReady && approvedRows >= Math.ceil(rows.length / 2) };
+}
+
+export function generateDomainSaasPlan(config, domain, state) {
+  const calc = calculateDomain(domain, state);
+  const model = buildAdvancedDomainModel(domain, state);
+  return {
+    product: config.title,
+    category: config.category,
+    idealCustomer: config.persona || domain.sampleClient,
+    planTiers: [
+      { name: 'Starter', price: 19, audience: 'single owner/operator', limits: '1 active workspace, local exports' },
+      { name: 'Team', price: 79, audience: 'student pod or small agency', limits: '10 clients, shared review queue, CSV/Markdown packs' },
+      { name: 'Chapter', price: 249, audience: 'Volta chapter or nonprofit cohort', limits: 'unlimited local workspaces, mentor dashboards, sponsor reporting' }
+    ],
+    clientPortal: ['Client intake', 'Evidence locker', 'Approval center', 'Export archive'],
+    analytics: model.dashboards,
+    automations: model.automationRules,
+    roadmap: ['Multi-client workspace switcher', 'Role-based mentor/owner review', 'Template library and reusable snippets', 'Scheduled reminders and status digests', 'Optional backend sync without weakening local-first privacy'],
+    readinessScore: Math.min(100, Math.round(((calc.completeness + calc.rowScore) / 2 + (model.enterpriseReadiness ? 100 : 70)) / 2))
+  };
+}
+
 export function generateDomainArtifacts(config, domain, state) {
   const calc = calculateDomain(domain, state);
+  const model = buildAdvancedDomainModel(domain, state);
   const values = Object.fromEntries(domain.fields.map(f => [f.label, state.values[f.id] || '']));
   return domain.artifacts.map((artifact, index) => ({
     id: `artifact-${index+1}`,
     title: artifact,
-    body: `${artifact} for ${config.title}: ${calc.insight}. Key inputs: ${Object.entries(values).slice(0,4).map(([k,v]) => `${k}: ${v || 'not set'}`).join('; ')}.`
+    body: `${artifact} for ${config.title}: ${calc.insight}. SaaS-grade output: ${model.primaryOutput}. Key inputs: ${Object.entries(values).slice(0,4).map(([k,v]) => `${k}: ${v || 'not set'}`).join('; ')}.`
   }));
 }
 
 export function buildDomainMarkdown(config, domain, state) {
   const calc = calculateDomain(domain, state);
-  const lines = [`# ${config.title} Domain Tool Export`, '', `**Tool:** ${domain.title}`, `**Purpose:** ${domain.purpose}`, `**Readiness:** ${calc.releaseReady ? 'Ready' : 'Needs work'}`, `**Insight:** ${calc.insight}`, '', '## Inputs'];
+  const model = buildAdvancedDomainModel(domain, state);
+  const saas = generateDomainSaasPlan(config, domain, state);
+  const lines = [`# ${config.title} Domain Tool Export`, '', `**Tool:** ${domain.title}`, `**Purpose:** ${domain.purpose}`, `**Readiness:** ${calc.releaseReady ? 'Ready' : 'Needs work'}`, `**Insight:** ${calc.insight}`, `**Advanced model:** ${model.model}`, `**SaaS readiness:** ${saas.readinessScore}/100`, '', '## Inputs'];
   domain.fields.forEach(f => lines.push(`- **${f.label}:** ${state.values[f.id] || 'Not set'}`));
   lines.push('', '## Work Items');
   state.rows.forEach(r => lines.push(`- ${r.approved ? '[x]' : '[ ]'} **${r.label}** — ${r.value || 'No value'} (${r.score}/10)`));
   lines.push('', '## Generated Artifacts');
   generateDomainArtifacts(config, domain, state).forEach(a => lines.push(`- **${a.title}:** ${a.body}`));
+  lines.push('', '## SaaS Expansion Plan');
+  saas.planTiers.forEach(tier => lines.push(`- **${tier.name} ($${tier.price}/mo):** ${tier.audience}; ${tier.limits}`));
+  lines.push('', '## Automation Rules');
+  model.automationRules.forEach(rule => lines.push(`- ${rule}`));
   lines.push('', '## Validation Checks');
   domain.checks.forEach(c => lines.push(`- ${c}`));
   return lines.join('\n');
 }
+
+export { buildSaasExpansionSuite, buildSaasSuiteMarkdown, summarizeSaasSuite } from './saas-suite.js';
 
 export function applyDomainSample(domain) {
   const state = createDomainState(domain);
